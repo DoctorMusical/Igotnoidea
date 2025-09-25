@@ -4,7 +4,7 @@ import datetime as _dt
 import sys
 import time
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 
 @dataclass
@@ -179,6 +179,269 @@ def run_timer(schedule: Iterable[ScheduleBlock], time_scale: int) -> None:
         print("\nTimer interrupted by user.\n")
 
 
+class TimerApp:
+    """Simple Tkinter UI for planning and running the study timer."""
+
+    def __init__(self, root, tk, ttk, messagebox) -> None:  # pragma: no cover - GUI wiring
+        self.root = root
+        self._tk = tk
+        self._ttk = ttk
+        self._messagebox = messagebox
+        self.engine = RecommendationEngine()
+        self.schedule: List[ScheduleBlock] = []
+        self._timer_id: Optional[str] = None
+        self._current_index = 0
+        self._minutes_left = 0
+        self._block_total = 0
+        self._time_scale = 60
+        self._active_block: Optional[ScheduleBlock] = None
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = self.root
+        root.title("Study Timer Planner")
+        root.geometry("620x520")
+        root.minsize(520, 420)
+
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+
+        main = self._ttk.Frame(root, padding=12)
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(6, weight=1)
+
+        # Inputs
+        self.total_minutes_var = self._tk.StringVar(value="180")
+        self.energy_var = self._tk.IntVar(value=3)
+        self.focus_var = self._tk.IntVar(value=3)
+        self.urgency_var = self._tk.IntVar(value=3)
+        self.start_var = self._tk.StringVar(value="")
+        self.time_scale_var = self._tk.IntVar(value=60)
+
+        self._ttk.Label(main, text="Total minutes:").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.total_entry = self._ttk.Spinbox(main, from_=15, to=480, increment=5, textvariable=self.total_minutes_var, width=8)
+        self.total_entry.grid(row=0, column=1, sticky="w", pady=(0, 4))
+
+        self._ttk.Label(main, text="Energy (1-5):").grid(row=1, column=0, sticky="w", pady=(0, 4))
+        self.energy_spin = self._ttk.Spinbox(main, from_=1, to=5, textvariable=self.energy_var, width=8)
+        self.energy_spin.grid(row=1, column=1, sticky="w", pady=(0, 4))
+
+        self._ttk.Label(main, text="Focus (1-5):").grid(row=2, column=0, sticky="w", pady=(0, 4))
+        self.focus_spin = self._ttk.Spinbox(main, from_=1, to=5, textvariable=self.focus_var, width=8)
+        self.focus_spin.grid(row=2, column=1, sticky="w", pady=(0, 4))
+
+        self._ttk.Label(main, text="Urgency (1-5):").grid(row=3, column=0, sticky="w", pady=(0, 4))
+        self.urgency_spin = self._ttk.Spinbox(main, from_=1, to=5, textvariable=self.urgency_var, width=8)
+        self.urgency_spin.grid(row=3, column=1, sticky="w", pady=(0, 4))
+
+        self._ttk.Label(main, text="Start time (HH:MM, optional):").grid(row=4, column=0, sticky="w", pady=(0, 4))
+        self.start_entry = self._ttk.Entry(main, textvariable=self.start_var, width=12)
+        self.start_entry.grid(row=4, column=1, sticky="w", pady=(0, 4))
+
+        self._ttk.Label(main, text="Seconds per minute (timer speed):").grid(row=5, column=0, sticky="w", pady=(0, 4))
+        self.time_scale_spin = self._ttk.Spinbox(main, from_=1, to=120, textvariable=self.time_scale_var, width=8)
+        self.time_scale_spin.grid(row=5, column=1, sticky="w", pady=(0, 8))
+
+        button_frame = self._ttk.Frame(main)
+        button_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+        button_frame.columnconfigure(2, weight=1)
+
+        self.generate_button = self._ttk.Button(button_frame, text="Generate Plan", command=self.generate_plan)
+        self.generate_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self.run_button = self._ttk.Button(button_frame, text="Run Timer", command=self.start_timer, state="disabled")
+        self.run_button.grid(row=0, column=1, sticky="ew", padx=4)
+
+        self.stop_button = self._ttk.Button(button_frame, text="Stop", command=self.stop_timer, state="disabled")
+        self.stop_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+
+        # Output
+        output_frame = self._ttk.LabelFrame(main, text="Plan")
+        output_frame.grid(row=7, column=0, columnspan=2, sticky="nsew")
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.rowconfigure(0, weight=1)
+
+        self.output = self._tk.Text(output_frame, height=14, wrap="word", state="disabled")
+        self.output.grid(row=0, column=0, sticky="nsew")
+
+        scroll = self._ttk.Scrollbar(output_frame, command=self.output.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.output.configure(yscrollcommand=scroll.set)
+
+        self.status_var = self._tk.StringVar(value="Fill in your details and click Generate Plan.")
+        self.status_label = self._ttk.Label(main, textvariable=self.status_var, wraplength=560)
+        self.status_label.grid(row=8, column=0, columnspan=2, sticky="we", pady=(8, 0))
+
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self) -> None:
+        self.stop_timer()
+        self.root.destroy()
+
+    def _parse_start_time(self) -> _dt.datetime:
+        text = self.start_var.get().strip()
+        if not text:
+            return _dt.datetime.now()
+        try:
+            parsed = _dt.datetime.strptime(text, "%H:%M").time()
+        except ValueError as exc:  # pragma: no cover - GUI validation
+            self._messagebox.showerror("Invalid time", f"Could not parse start time: {exc}")
+            raise
+        return _dt.datetime.combine(_dt.date.today(), parsed)
+
+    def generate_plan(self) -> None:  # pragma: no cover - GUI wiring
+        try:
+            total_minutes = int(self.total_minutes_var.get())
+        except ValueError:
+            self._messagebox.showerror("Invalid input", "Total minutes must be a number.")
+            return
+        if total_minutes <= 0:
+            self._messagebox.showerror("Invalid input", "Total minutes must be positive.")
+            return
+
+        try:
+            start_time = self._parse_start_time()
+        except ValueError:
+            return
+
+        try:
+            energy = int(self.energy_var.get())
+            focus = int(self.focus_var.get())
+            urgency = int(self.urgency_var.get())
+        except ValueError:
+            self._messagebox.showerror("Invalid input", "Energy, focus, and urgency must be numbers between 1 and 5.")
+            return
+
+        if not all(1 <= value <= 5 for value in (energy, focus, urgency)):
+            self._messagebox.showerror("Invalid input", "Energy, focus, and urgency must be between 1 and 5.")
+            return
+
+        durations = self.engine.recommend_durations(energy, focus, urgency, total_minutes)
+        self.schedule = build_schedule(start_time, total_minutes, durations)
+        self._display_plan(durations)
+
+        self.status_var.set("Plan ready! Click Run Timer to start the countdown or adjust the inputs.")
+        self.run_button.configure(state="normal")
+
+    def _display_plan(self, durations: dict) -> None:
+        output_lines = [
+            "Input summary:",
+            f" - Total minutes: {sum(block.duration_minutes for block in self.schedule):.0f}",
+            f" - Energy: {self.energy_var.get()}",
+            f" - Focus: {self.focus_var.get()}",
+            f" - Urgency: {self.urgency_var.get()}",
+            "",
+            "Recommended durations:",
+            f" - Study blocks: {durations['study']} minutes",
+            f" - Short breaks: {durations['short_break']} minutes",
+            f" - Long breaks: {durations['long_break']} minutes (every {durations['long_break_interval']} cycle(s))",
+            "",
+            "Plan:",
+        ]
+
+        for block in self.schedule:
+            block_type = "Study" if block.kind == "study" else ("Long break" if block.kind == "long_break" else "Break")
+            output_lines.append(f" - {block.summary} [{block_type}]")
+
+        total_study = sum(block.duration_minutes for block in self.schedule if block.kind == "study")
+        total_break = sum(block.duration_minutes for block in self.schedule if block.kind != "study")
+        output_lines.extend(
+            [
+                "",
+                "Totals:",
+                f" * Study time: {total_study:.0f} minutes",
+                f" * Break time: {total_break:.0f} minutes",
+            ]
+        )
+
+        self.output.configure(state="normal")
+        self.output.delete("1.0", self._tk.END)
+        self.output.insert(self._tk.END, "\n".join(output_lines))
+        self.output.configure(state="disabled")
+
+    def start_timer(self) -> None:  # pragma: no cover - GUI wiring
+        if not self.schedule:
+            self._messagebox.showwarning("No plan", "Generate a plan before running the timer.")
+            return
+
+        try:
+            self._time_scale = max(1, int(self.time_scale_var.get()))
+        except ValueError:
+            self._messagebox.showerror("Invalid input", "Time scale must be a whole number of seconds.")
+            return
+
+        self.run_button.configure(state="disabled")
+        self.generate_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self._current_index = 0
+        self._run_next_block()
+
+    def stop_timer(self, *, message: Optional[str] = None) -> None:  # pragma: no cover - GUI wiring
+        if self._timer_id is not None:
+            self.root.after_cancel(self._timer_id)
+            self._timer_id = None
+        if message is None:
+            message = "Timer stopped. Adjust inputs or run again when ready."
+        self.status_var.set(message)
+        self._active_block = None
+        self.generate_button.configure(state="normal")
+        self.run_button.configure(state="normal" if self.schedule else "disabled")
+        self.stop_button.configure(state="disabled")
+
+    def _run_next_block(self) -> None:
+        if self._timer_id is not None:
+            self.root.after_cancel(self._timer_id)
+            self._timer_id = None
+
+        while self._current_index < len(self.schedule):
+            block = self.schedule[self._current_index]
+            minutes = int(round(block.duration_minutes))
+            if minutes <= 0:
+                self._current_index += 1
+                continue
+
+            self._active_block = block
+            self._minutes_left = minutes
+            self._block_total = minutes
+            self.status_var.set(f"{block.label} — starting")
+            self._timer_id = self.root.after(10, self._tick)
+            return
+
+        self.stop_timer(message="All scheduled blocks are complete! Great job.")
+
+    def _tick(self) -> None:
+        if self._active_block is None:
+            return
+
+        if self._minutes_left <= 0:
+            self.status_var.set(f"{self._active_block.label} — done!")
+            self._current_index += 1
+            self._timer_id = self.root.after(600, self._run_next_block)
+            return
+
+        remaining = self._minutes_left
+        status = "Starting" if remaining == self._block_total else "Remaining"
+        self.status_var.set(f"{self._active_block.label} — {status}: {remaining} minute(s)")
+        self._minutes_left -= 1
+        self._timer_id = self.root.after(self._time_scale * 1000, self._tick)
+
+
+def launch_gui() -> None:  # pragma: no cover - GUI wiring
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError as exc:  # pragma: no cover - environment dependent
+        raise SystemExit("Tkinter is required for the GUI but is not available in this environment.") from exc
+
+    root = tk.Tk()
+    TimerApp(root, tk, ttk, messagebox)
+    root.mainloop()
+
+
 def parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Plan and run an optimized study/break timer for students.",
@@ -190,11 +453,16 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--start", type=str, default=None, help="Optional start time HH:MM (24h). Defaults to now.")
     parser.add_argument("--time-scale", type=int, default=60, help="Seconds that represent one scheduled minute when running the timer (default: 60).")
     parser.add_argument("--run", action="store_true", help="Run the live timer after displaying the plan.")
+    parser.add_argument("--gui", action="store_true", help="Launch the graphical timer planner.")
     return parser.parse_args(argv)
 
 
 def main(argv: List[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.gui:
+        launch_gui()
+        return 0
 
     if args.total_minutes <= 0:
         raise SystemExit("total-minutes must be positive")

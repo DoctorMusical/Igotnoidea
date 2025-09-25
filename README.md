@@ -1,6 +1,6 @@
 # Student Study Timer
 
-This repository contains a command line planner that recommends study and break blocks based on your current energy, focus, and urgency levels. You can also run an optional live countdown timer for each block.
+This repository contains a command line planner that recommends study and break blocks based on your current energy, focus, and urgency levels. You can also run an optional live countdown timer for each block or open a simple graphical interface for students who prefer buttons over command line flags.
 
 ## Requirements
 
@@ -15,6 +15,16 @@ python student_timer.py --total-minutes 120 --energy 3 --focus 3 --urgency 3
 ```
 
 The script prints a recommended schedule, including when to study and when to take breaks.
+
+## Launching the GUI
+
+Prefer a windowed interface? Launch the planner with:
+
+```bash
+python student_timer.py --gui
+```
+
+The GUI lets you adjust session length, energy/focus/urgency levels, optional start time, and the timer speed. Click **Generate Plan** to see the recommended blocks, then **Run Timer** to follow the countdown inside the app. Use **Stop** to pause or end the timer at any point.
 
 ## Watching the timer
 
